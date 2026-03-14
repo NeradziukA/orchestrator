@@ -26,12 +26,13 @@ sequenceDiagram
 
 | Command | Description |
 |---|---|
-| `[manager]: [text]` | Route task to a specific manager |
 | `кто делает [project]?` | Find which manager handles a project |
-| `/tasks` | List all pending tasks across all managers |
 | `статус [manager]` | Last task result for a manager |
+| `[manager]: [text]` | Route task to a specific manager |
+| `/tasks` | List all pending tasks across all managers |
 | `/status` | Health check all managers |
 | `/managers` | List managers with queue lengths |
+| `/update_bot` | Pull latest changes and restart the bot |
 
 ## Configuration
 
