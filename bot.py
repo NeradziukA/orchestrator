@@ -65,15 +65,29 @@ async def _check_manager(m: dict) -> tuple[bool, str]:
     if r:
         try:
             queue_len = await r.llen(m.get("task_queue", "claude:tasks"))
-            in_progress = await r.exists(m.get("progress_key", "claude:in_progress"))
-            has_work = queue_len > 0 or in_progress
+            progress_raw = await r.get(m.get("progress_key", "claude:in_progress"))
+            has_work = queue_len > 0 or bool(progress_raw)
 
             if has_work:
                 hb = await r.exists(m.get("heartbeat_key", "claude:worker:heartbeat"))
-                if hb:
-                    lines.append(f"воркер ✅ (задач: {queue_len})")
+                if progress_raw:
+                    try:
+                        t = json.loads(progress_raw)
+                        in_prog_str = f"в работе: #{t.get('task_num', '?')}"
+                    except Exception:
+                        in_prog_str = "в работе"
                 else:
-                    lines.append(f"воркер ❌ нет heartbeat (задач в очереди: {queue_len})")
+                    in_prog_str = None
+                status_parts = []
+                if in_prog_str:
+                    status_parts.append(in_prog_str)
+                if queue_len:
+                    status_parts.append(f"в очереди: {queue_len}")
+                status_str = ", ".join(status_parts)
+                if hb:
+                    lines.append(f"воркер ✅ ({status_str})")
+                else:
+                    lines.append(f"воркер ❌ нет heartbeat ({status_str})")
                     ok = False
             else:
                 lines.append("воркер — очередь пуста, проверка пропущена")
