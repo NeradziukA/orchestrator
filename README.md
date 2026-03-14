@@ -16,10 +16,10 @@ sequenceDiagram
     O->>U: 📬 задача #N передана
 
     M->>R: blpop claude:notify (background)
-    M->>U: 📋 Задача #N — запустить? /ok_N
+    M->>U: 📋 Задача #N — запустить?
 
-    U->>M: /ok_N
-    M->>R: rpush claude:tasks
+    U->>M: да / нет
+    M->>R: rpush claude:tasks (или удаляет pending)
     Note over M: Worker picks up and executes
 ```
 
