@@ -46,7 +46,7 @@ async def _check_manager(m: dict) -> tuple[bool, str]:
     health_url = m.get("health_url")
     if health_url:
         try:
-            async with httpx.AsyncClient(timeout=8) as client:
+            async with httpx.AsyncClient(timeout=8, verify=False) as client:
                 r = await client.get(health_url)
             if r.status_code == 200:
                 data = r.json()
