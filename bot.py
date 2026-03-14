@@ -12,11 +12,13 @@ from fastapi import FastAPI, Request
 
 load_dotenv()
 
-BOT_TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
-API_BASE = f"https://api.telegram.org/bot{BOT_TOKEN}"
-ALLOWED_IDS = set(int(x) for x in os.getenv("ALLOWED_USER_IDS", "").split(",") if x.strip())
+BOT_TOKEN      = os.environ["TELEGRAM_BOT_TOKEN"]
+API_BASE       = f"https://api.telegram.org/bot{BOT_TOKEN}"
+ALLOWED_IDS    = set(int(x) for x in os.getenv("ALLOWED_USER_IDS", "").split(",") if x.strip())
 MANAGERS_CONFIG = os.getenv("MANAGERS_CONFIG", "managers.yaml")
-PORT = int(os.getenv("PORT", 8001))
+PORT           = int(os.getenv("PORT", 8001))
+ALERT_CHAT_ID  = int(os.getenv("ALERT_CHAT_ID", "0")) or next(iter(ALLOWED_IDS), None)
+CHECK_INTERVAL = int(os.getenv("MANAGER_CHECK_INTERVAL", "300"))  # seconds
 
 with open(MANAGERS_CONFIG, encoding="utf-8") as f:
     _config = yaml.safe_load(f)
@@ -29,6 +31,82 @@ _redis: dict[str, aioredis.Redis] = {}
 app = FastAPI()
 
 
+async def _check_manager(m: dict) -> tuple[bool, str]:
+    """
+    Checks manager health:
+    - HTTP /health endpoint (if health_url is set)
+    - Worker heartbeat via Redis (only if queue is non-empty)
+    Returns (ok, status_line).
+    """
+    name = m["name"]
+    lines: list[str] = []
+    ok = True
+
+    # HTTP health check
+    health_url = m.get("health_url")
+    if health_url:
+        try:
+            async with httpx.AsyncClient(timeout=8) as client:
+                r = await client.get(health_url)
+            if r.status_code == 200:
+                data = r.json()
+                lines.append(f"бот ✅ (очередь: {data.get('queue', '?')})")
+            else:
+                lines.append(f"бот ❌ HTTP {r.status_code}")
+                ok = False
+        except Exception as e:
+            lines.append(f"бот ❌ {e}")
+            ok = False
+    else:
+        lines.append("бот — нет health_url")
+
+    # Worker heartbeat check via Redis (skip if queue is empty)
+    r = _redis.get(name)
+    if r:
+        try:
+            queue_len = await r.llen(m.get("task_queue", "claude:tasks"))
+            in_progress = await r.exists(m.get("progress_key", "claude:in_progress"))
+            has_work = queue_len > 0 or in_progress
+
+            if has_work:
+                hb = await r.exists(m.get("heartbeat_key", "claude:worker:heartbeat"))
+                if hb:
+                    lines.append(f"воркер ✅ (задач: {queue_len})")
+                else:
+                    lines.append(f"воркер ❌ нет heartbeat (задач в очереди: {queue_len})")
+                    ok = False
+            else:
+                lines.append("воркер — очередь пуста, проверка пропущена")
+        except Exception as e:
+            lines.append(f"воркер ❌ Redis: {e}")
+            ok = False
+
+    return ok, f"*{name}*: " + " | ".join(lines)
+
+
+async def managers_watchdog() -> None:
+    """Checks all managers every CHECK_INTERVAL seconds and reports to Telegram."""
+    await asyncio.sleep(60)  # initial delay after startup
+    while True:
+        await asyncio.sleep(CHECK_INTERVAL)
+        results: list[str] = []
+        any_error = False
+        for m in MANAGERS:
+            try:
+                ok, line = await _check_manager(m)
+                results.append(("✅" if ok else "❌") + " " + line)
+                if not ok:
+                    any_error = True
+            except Exception as e:
+                results.append(f"❌ *{m['name']}*: неожиданная ошибка: {e}")
+                any_error = True
+
+        if ALERT_CHAT_ID:
+            icon = "🚨" if any_error else "✅"
+            text = f"{icon} *Проверка менеджеров*\n\n" + "\n".join(results)
+            await send(ALERT_CHAT_ID, text)
+
+
 @app.on_event("startup")
 async def startup() -> None:
     for m in MANAGERS:
@@ -37,6 +115,7 @@ async def startup() -> None:
             encoding="utf-8",
             decode_responses=True,
         )
+    asyncio.create_task(managers_watchdog())
 
 
 @app.on_event("shutdown")
