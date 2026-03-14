@@ -100,8 +100,7 @@ async def handle_route_task(
         task_num = await push_task(m, task_text, chat_id, message_id)
         await send(
             chat_id,
-            f"📬 <b>{m['name']}</b> — задача <b>#{task_num}</b> передана.\n"
-            f"Менеджер запросит подтверждение в своём чате.",
+            f"📬 <b>{m['name']}</b> — задача <b>#{task_num}</b> передана.",
             reply_to=message_id,
         )
     except Exception as e:

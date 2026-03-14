@@ -17,9 +17,8 @@ sequenceDiagram
 
     M->>R: blpop claude:notify (background)
     M->>U: 📋 Задача #N — запустить?
-
     U->>M: да / нет
-    M->>R: rpush claude:tasks (или удаляет pending)
+    M->>R: rpush claude:tasks
     Note over M: Worker picks up and executes
 ```
 
