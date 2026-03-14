@@ -65,7 +65,7 @@ async def handle_message(chat_id: int, user_id: int, text: str, message_id: int)
         await handle_status(chat_id, m.group(1).strip())
         return
 
-    if any(kw in tl for kw in ("как дела", "healthcheck")) or tl == "/health":
+    if tl in ("/status", "/health") or any(kw in tl for kw in ("как дела", "healthcheck")):
         await run_check(chat_id)
         return
 
