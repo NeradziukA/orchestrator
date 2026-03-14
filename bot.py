@@ -226,6 +226,7 @@ async def _handle_help(chat_id: int) -> None:
         "• <code>задачи</code> — все незавершённые задачи\n"
         "• <code>статус [менеджер]</code> — последний результат\n"
         "• <code>задача для [менеджер]: [текст]</code> — отправить задачу\n"
+        "• <code>как дела</code> — проверить здоровье всех менеджеров\n"
         "• /managers — список менеджеров с длиной очередей",
     )
 
@@ -361,6 +362,23 @@ async def handle_message(chat_id: int, user_id: int, text: str, message_id: int)
     m = re.search(r"статус\s+(.+)", tl)
     if m:
         await _handle_status(chat_id, m.group(1).strip())
+        return
+
+    # "как дела" / "как дела?" / /healthcheck
+    if any(kw in tl for kw in ("как дела", "healthcheck")) or tl == "/health":
+        results: list[str] = []
+        any_error = False
+        for manager in MANAGERS:
+            try:
+                ok, line = await _check_manager(manager)
+                results.append(("✅" if ok else "❌") + " " + line)
+                if not ok:
+                    any_error = True
+            except Exception as e:
+                results.append(f"❌ *{manager['name']}*: {e}")
+                any_error = True
+        icon = "🚨" if any_error else "✅"
+        await send(chat_id, f"{icon} *Проверка менеджеров*\n\n" + "\n".join(results))
         return
 
     await send(chat_id, "🤔 Не понял команду. Напишите /help для справки.")
