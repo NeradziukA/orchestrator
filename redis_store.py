@@ -75,4 +75,6 @@ async def push_task(m: dict, prompt: str, chat_id: int, message_id: int) -> int:
     }
     pending_key = m.get("pending_prefix", "claude:pending:") + str(task_num)
     await r.set(pending_key, json.dumps(task))
+    # Signal the manager bot to send confirmation request in its own chat
+    await r.rpush(m.get("notify_queue", "claude:notify"), str(task_num))
     return task_num
