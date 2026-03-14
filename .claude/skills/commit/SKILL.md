@@ -14,7 +14,7 @@ Do not add a co-author section.
 Before creating a commit, you MUST perform the following steps:
 
 1.  Pull latest changes before committing
-    - Run `git pull --rebase origin main` to avoid conflicts
+    - Run `git pull` to avoid conflicts
     - If pull fails, stop and report the error
 2.  Analyze the completed task
     - Determine what functionality was added, changed, or removed.
