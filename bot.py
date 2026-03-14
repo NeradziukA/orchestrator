@@ -94,18 +94,23 @@ async def _last_result(m: dict) -> dict | None:
         return None
 
 
-async def _push_task(m: dict, prompt: str, chat_id: int, message_id: int) -> None:
+async def _push_task(m: dict, prompt: str, chat_id: int, message_id: int) -> int:
+    """Put task into pending state. Returns task_num."""
     r = _redis.get(m["name"])
     if not r:
         raise RuntimeError(f"No Redis connection for manager {m['name']}")
+    task_num = await r.incr(m.get("task_counter", "claude:task_counter"))
     task = {
         "task_id": f"{chat_id}:{message_id}:{datetime.now(timezone.utc).isoformat()}",
+        "task_num": task_num,
         "prompt": prompt,
         "chat_id": chat_id,
         "message_id": message_id,
         "created_at": datetime.now(timezone.utc).isoformat(),
     }
-    await r.rpush(m.get("task_queue", "claude:tasks"), json.dumps(task))
+    pending_key = m.get("pending_prefix", "claude:pending:") + str(task_num)
+    await r.set(pending_key, json.dumps(task))
+    return task_num
 
 
 # ---------------------------------------------------------------------------
@@ -222,15 +227,17 @@ async def _handle_route_task(
         return
     m = found[0]
     try:
-        await _push_task(m, task_text, chat_id, message_id)
+        task_num = await _push_task(m, task_text, chat_id, message_id)
         await send(
             chat_id,
-            f"✅ Задача отправлена менеджеру <b>{m['name']}</b>:\n"
-            f"<code>{task_text[:200]}</code>",
+            f"📋 <b>{m['name']}</b> — задача <b>#{task_num}</b>:\n"
+            f"<code>{task_text[:200]}</code>\n\n"
+            f"Подтвердить: <code>/ok_{task_num}</code>\n"
+            f"Отменить: <code>/cancel_{task_num}</code>",
             reply_to=message_id,
         )
     except Exception as e:
-        await send(chat_id, f"❌ Не удалось отправить задачу: {e}")
+        await send(chat_id, f"❌ Не удалось создать задачу: {e}")
 
 
 # ---------------------------------------------------------------------------
