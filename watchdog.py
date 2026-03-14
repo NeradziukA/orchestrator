@@ -89,9 +89,28 @@ async def run_check(chat_id: int) -> None:
 
 
 async def managers_watchdog() -> None:
-    """Checks all managers every CHECK_INTERVAL seconds and reports to Telegram."""
+    """Checks all managers every CHECK_INTERVAL seconds.
+    Only alerts if there is active work or an error — skips if all queues are empty.
+    """
     await asyncio.sleep(60)  # initial delay after startup
     while True:
         await asyncio.sleep(CHECK_INTERVAL)
-        if ALERT_CHAT_ID:
+        if not ALERT_CHAT_ID:
+            continue
+        # Skip silent check if no manager has active work
+        has_any_work = False
+        for m in MANAGERS:
+            r = redis_get(m["name"])
+            if not r:
+                continue
+            try:
+                queue_len = await r.llen(m.get("task_queue", "claude:tasks"))
+                in_progress = await r.exists(m.get("progress_key", "claude:in_progress"))
+                if queue_len > 0 or in_progress:
+                    has_any_work = True
+                    break
+            except Exception:
+                has_any_work = True  # Redis error counts as something to report
+                break
+        if has_any_work:
             await run_check(ALERT_CHAT_ID)
