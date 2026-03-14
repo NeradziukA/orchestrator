@@ -1,0 +1,20 @@
+# Each entry corresponds to a running project-manager bot instance.
+# Match TASK_QUEUE and RESULT_KEY to the values in that instance's .env file.
+
+managers:
+  - name: hives-manager
+    description: "Manages hives project (Node.js)"
+    projects:
+      - hives
+      - nodejs
+    redis_url: "redis://localhost:6379"
+    task_queue: "claude:tasks:hives"
+    last_result: "claude:last_result:hives"
+
+  # - name: another-manager
+  #   description: "Manages another project"
+  #   projects:
+  #     - another
+  #   redis_url: "redis://localhost:6379"
+  #   task_queue: "claude:tasks:another"
+  #   last_result: "claude:last_result:another"

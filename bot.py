@@ -1,0 +1,314 @@
+import asyncio
+import json
+import os
+import re
+from datetime import datetime, timezone
+
+import httpx
+import yaml
+import redis.asyncio as aioredis
+from dotenv import load_dotenv
+from fastapi import FastAPI, Request
+
+load_dotenv()
+
+BOT_TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
+API_BASE = f"https://api.telegram.org/bot{BOT_TOKEN}"
+ALLOWED_IDS = set(int(x) for x in os.getenv("ALLOWED_USER_IDS", "").split(",") if x.strip())
+MANAGERS_CONFIG = os.getenv("MANAGERS_CONFIG", "managers.yaml")
+PORT = int(os.getenv("PORT", 8001))
+
+with open(MANAGERS_CONFIG, encoding="utf-8") as f:
+    _config = yaml.safe_load(f)
+
+MANAGERS: list[dict] = _config.get("managers", [])
+
+# Redis connection pool per manager, keyed by manager name
+_redis: dict[str, aioredis.Redis] = {}
+
+app = FastAPI()
+
+
+@app.on_event("startup")
+async def startup() -> None:
+    for m in MANAGERS:
+        _redis[m["name"]] = aioredis.from_url(
+            m.get("redis_url", "redis://localhost:6379"),
+            encoding="utf-8",
+            decode_responses=True,
+        )
+
+
+@app.on_event("shutdown")
+async def shutdown() -> None:
+    for r in _redis.values():
+        await r.aclose()
+
+
+# ---------------------------------------------------------------------------
+# Telegram helpers
+# ---------------------------------------------------------------------------
+
+async def send(chat_id: int, text: str, reply_to: int | None = None) -> dict:
+    payload: dict = {"chat_id": chat_id, "text": text[:4096], "parse_mode": "HTML"}
+    if reply_to:
+        payload["reply_to_message_id"] = reply_to
+    async with httpx.AsyncClient() as client:
+        r = await client.post(f"{API_BASE}/sendMessage", json=payload)
+        return r.json()
+
+
+# ---------------------------------------------------------------------------
+# Redis helpers
+# ---------------------------------------------------------------------------
+
+async def _queue_length(m: dict) -> int:
+    r = _redis.get(m["name"])
+    if not r:
+        return -1
+    try:
+        return await r.llen(m.get("task_queue", "claude:tasks"))
+    except Exception:
+        return -1
+
+
+async def _all_tasks(m: dict) -> list[dict]:
+    r = _redis.get(m["name"])
+    if not r:
+        return []
+    try:
+        items = await r.lrange(m.get("task_queue", "claude:tasks"), 0, -1)
+        return [json.loads(i) for i in items]
+    except Exception:
+        return []
+
+
+async def _last_result(m: dict) -> dict | None:
+    r = _redis.get(m["name"])
+    if not r:
+        return None
+    try:
+        raw = await r.get(m.get("last_result", "claude:last_result"))
+        return json.loads(raw) if raw else None
+    except Exception:
+        return None
+
+
+async def _push_task(m: dict, prompt: str, chat_id: int, message_id: int) -> None:
+    r = _redis.get(m["name"])
+    if not r:
+        raise RuntimeError(f"No Redis connection for manager {m['name']}")
+    task = {
+        "task_id": f"{chat_id}:{message_id}:{datetime.now(timezone.utc).isoformat()}",
+        "prompt": prompt,
+        "chat_id": chat_id,
+        "message_id": message_id,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    }
+    await r.rpush(m.get("task_queue", "claude:tasks"), json.dumps(task))
+
+
+# ---------------------------------------------------------------------------
+# Manager lookup
+# ---------------------------------------------------------------------------
+
+def _find_by_project(keyword: str) -> list[dict]:
+    kw = keyword.lower().strip()
+    return [
+        m for m in MANAGERS
+        if kw in m["name"].lower()
+        or any(kw in p.lower() for p in m.get("projects", []))
+    ]
+
+
+def _find_by_name(keyword: str) -> list[dict]:
+    kw = keyword.lower().strip()
+    return [m for m in MANAGERS if kw in m["name"].lower()]
+
+
+# ---------------------------------------------------------------------------
+# Command handlers
+# ---------------------------------------------------------------------------
+
+async def _handle_help(chat_id: int) -> None:
+    managers_lines = "\n".join(
+        f"  • <b>{m['name']}</b> — {m.get('description', '')}" for m in MANAGERS
+    )
+    await send(
+        chat_id,
+        f"🎼 <b>Дирижёр</b>\n\nУправляю {len(MANAGERS)} менеджерами:\n{managers_lines}\n\n"
+        "<b>Команды:</b>\n"
+        "• <code>кто делает [проект]?</code> — найти ответственного\n"
+        "• <code>задачи</code> — все незавершённые задачи\n"
+        "• <code>статус [менеджер]</code> — последний результат\n"
+        "• <code>задача для [менеджер]: [текст]</code> — отправить задачу\n"
+        "• /managers — список менеджеров с длиной очередей",
+    )
+
+
+async def _handle_managers(chat_id: int) -> None:
+    lines: list[str] = []
+    for m in MANAGERS:
+        q_len = await _queue_length(m)
+        projects = ", ".join(m.get("projects", [])) or "—"
+        queue_str = str(q_len) if q_len >= 0 else "недоступен"
+        lines.append(
+            f"• <b>{m['name']}</b> — {m.get('description', '')}\n"
+            f"  Проекты: {projects}\n"
+            f"  В очереди: {queue_str}"
+        )
+    await send(chat_id, "👥 <b>Менеджеры:</b>\n\n" + "\n\n".join(lines))
+
+
+async def _handle_who_does(chat_id: int, project: str) -> None:
+    found = _find_by_project(project)
+    if not found:
+        await send(chat_id, f"🤷 Никто из менеджеров не работает над <code>{project}</code>")
+        return
+    verb = "делает" if len(found) == 1 else "делают"
+    names = ", ".join(f"<b>{m['name']}</b>" for m in found)
+    details = "\n".join(f"  • {m['name']}: {m.get('description', '')}" for m in found)
+    await send(chat_id, f"🙋 Я! {names} {verb} <code>{project}</code>\n\n{details}")
+
+
+async def _handle_tasks(chat_id: int) -> None:
+    blocks: list[str] = []
+    total = 0
+    for m in MANAGERS:
+        tasks = await _all_tasks(m)
+        total += len(tasks)
+        if not tasks:
+            blocks.append(f"<b>{m['name']}</b>: очередь пуста")
+        else:
+            task_lines = "\n".join(
+                f"  {i + 1}. {t.get('prompt', '')[:100]}"
+                for i, t in enumerate(tasks)
+            )
+            blocks.append(f"<b>{m['name']}</b> ({len(tasks)} задач):\n{task_lines}")
+    header = f"📋 Всего незавершённых задач: <b>{total}</b>\n\n"
+    await send(chat_id, header + "\n\n".join(blocks))
+
+
+async def _handle_status(chat_id: int, name_query: str) -> None:
+    found = _find_by_name(name_query)
+    if not found:
+        await send(chat_id, f"🤷 Менеджер <code>{name_query}</code> не найден")
+        return
+    m = found[0]
+    result = await _last_result(m)
+    if not result:
+        await send(chat_id, f"📊 <b>{m['name']}</b>: нет данных о последней задаче")
+        return
+    status = "✅ успех" if result.get("success") else "❌ ошибка"
+    elapsed = result.get("elapsed", "?")
+    prompt = result.get("prompt", "")[:120]
+    finished = result.get("finished", "")[:19]
+    await send(
+        chat_id,
+        f"📊 <b>{m['name']}</b>\n"
+        f"Статус: {status}\n"
+        f"Время выполнения: {elapsed}с\n"
+        f"Завершено: {finished}\n"
+        f"Задача: <code>{prompt}</code>",
+    )
+
+
+async def _handle_route_task(
+    chat_id: int, message_id: int, manager_query: str, task_text: str
+) -> None:
+    found = _find_by_name(manager_query)
+    if not found:
+        await send(chat_id, f"🤷 Менеджер <code>{manager_query}</code> не найден")
+        return
+    m = found[0]
+    try:
+        await _push_task(m, task_text, chat_id, message_id)
+        await send(
+            chat_id,
+            f"✅ Задача отправлена менеджеру <b>{m['name']}</b>:\n"
+            f"<code>{task_text[:200]}</code>",
+            reply_to=message_id,
+        )
+    except Exception as e:
+        await send(chat_id, f"❌ Не удалось отправить задачу: {e}")
+
+
+# ---------------------------------------------------------------------------
+# Main message dispatcher
+# ---------------------------------------------------------------------------
+
+async def handle_message(chat_id: int, user_id: int, text: str, message_id: int) -> None:
+    if ALLOWED_IDS and user_id not in ALLOWED_IDS:
+        await send(chat_id, "⛔ Нет доступа.")
+        return
+
+    tl = text.lower().strip()
+
+    # /start or /help
+    if tl in ("/start", "/help"):
+        await _handle_help(chat_id)
+        return
+
+    # /managers
+    if tl == "/managers":
+        await _handle_managers(chat_id)
+        return
+
+    # "кто делает X?" / "кто работает над X?" / "кто занимается X?"
+    m = re.search(r"кто\s+(?:делает|работает\s+над|занимается)\s+(.+?)[\?\!\.\s]*$", tl)
+    if m:
+        await _handle_who_does(chat_id, m.group(1).strip().rstrip("?!. "))
+        return
+
+    # "задачи" / "незавершённые" / "что в очереди" / "очередь"
+    if any(kw in tl for kw in ("задач", "очередь", "незавершён", "не завершён")):
+        await _handle_tasks(chat_id)
+        return
+
+    # "статус X"
+    m = re.search(r"статус\s+(.+)", tl)
+    if m:
+        await _handle_status(chat_id, m.group(1).strip())
+        return
+
+    # "задача для X: текст" (original text for correct case in task prompt)
+    m = re.match(r"задача для (.+?):\s*(.+)", text, re.IGNORECASE | re.DOTALL)
+    if m:
+        await _handle_route_task(chat_id, message_id, m.group(1).strip(), m.group(2).strip())
+        return
+
+    await send(chat_id, "🤔 Не понял команду. Напишите /help для справки.")
+
+
+# ---------------------------------------------------------------------------
+# Webhook endpoint
+# ---------------------------------------------------------------------------
+
+@app.post("/webhook")
+async def webhook(request: Request) -> dict:
+    data = await request.json()
+    msg = data.get("message") or data.get("edited_message")
+    if not msg:
+        return {"ok": True}
+    text = msg.get("text", "").strip()
+    if not text:
+        return {"ok": True}
+    asyncio.create_task(
+        handle_message(
+            chat_id=msg["chat"]["id"],
+            user_id=msg["from"]["id"],
+            text=text,
+            message_id=msg["message_id"],
+        )
+    )
+    return {"ok": True}
+
+
+@app.get("/health")
+async def health() -> dict:
+    return {"status": "ok", "managers": len(MANAGERS)}
+
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run("bot:app", host="0.0.0.0", port=PORT, reload=False)
