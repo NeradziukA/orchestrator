@@ -10,6 +10,7 @@ from handlers import (
     handle_route_task,
     handle_status,
     handle_tasks,
+    handle_update_bot,
     handle_who_does,
 )
 from redis_store import close_redis, init_redis
@@ -67,6 +68,10 @@ async def handle_message(chat_id: int, user_id: int, text: str, message_id: int)
 
     if tl in ("/status", "/health"):
         await run_check(chat_id)
+        return
+
+    if tl == "/update_bot":
+        await handle_update_bot(chat_id)
         return
 
     await send(chat_id, "🤔 Не понял команду. Напишите /help для справки.")

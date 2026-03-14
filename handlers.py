@@ -1,7 +1,14 @@
-from config import MANAGERS
+import asyncio
+import subprocess
+from pathlib import Path
+
+from config import ALERT_CHAT_ID, MANAGERS
 from managers import find_by_name, find_by_project
 from redis_store import all_tasks, last_result, push_task, queue_length
 from telegram import send
+
+PROJECT_DIR = Path(__file__).resolve().parent
+SERVICE_NAME = "orchestrator"
 
 
 async def handle_help(chat_id: int) -> None:
@@ -17,7 +24,8 @@ async def handle_help(chat_id: int) -> None:
         "• <code>статус [менеджер]</code> — последний результат\n"
         "• <code>задача для [менеджер]: [текст]</code> — отправить задачу\n"
         "• /status — проверить здоровье всех менеджеров\n"
-        "• /managers — список менеджеров с длиной очередей",
+        "• /managers — список менеджеров с длиной очередей\n"
+        "• /update_bot — обновить и перезапустить бота",
     )
 
 
@@ -86,6 +94,26 @@ async def handle_status(chat_id: int, name_query: str) -> None:
         f"Завершено: {finished}\n"
         f"Задача: <code>{prompt}</code>",
     )
+
+
+async def handle_update_bot(chat_id: int) -> None:
+    pull = subprocess.run(
+        ["git", "pull", "--rebase"],
+        cwd=str(PROJECT_DIR),
+        capture_output=True,
+        text=True,
+    )
+    out = (pull.stdout + pull.stderr).strip()
+    if pull.returncode != 0:
+        await send(chat_id, f"❌ git pull failed:\n<pre>{out}</pre>")
+        return
+    await send(chat_id, f"✅ Обновлено:\n<pre>{out}</pre>\nПерезапускаю...")
+
+    async def _restart() -> None:
+        await asyncio.sleep(0.5)
+        subprocess.run(["sudo", "systemctl", "restart", SERVICE_NAME])
+
+    asyncio.create_task(_restart())
 
 
 async def handle_route_task(
