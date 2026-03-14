@@ -260,6 +260,12 @@ async def handle_message(chat_id: int, user_id: int, text: str, message_id: int)
         await _handle_who_does(chat_id, m.group(1).strip().rstrip("?!. "))
         return
 
+    # "задача для X: текст" — must be checked before generic "задач" keyword
+    m = re.match(r"задача для (.+?):\s*(.+)", text, re.IGNORECASE | re.DOTALL)
+    if m:
+        await _handle_route_task(chat_id, message_id, m.group(1).strip(), m.group(2).strip())
+        return
+
     # "задачи" / "незавершённые" / "что в очереди" / "очередь"
     if any(kw in tl for kw in ("задач", "очередь", "незавершён", "не завершён")):
         await _handle_tasks(chat_id)
@@ -269,12 +275,6 @@ async def handle_message(chat_id: int, user_id: int, text: str, message_id: int)
     m = re.search(r"статус\s+(.+)", tl)
     if m:
         await _handle_status(chat_id, m.group(1).strip())
-        return
-
-    # "задача для X: текст" (original text for correct case in task prompt)
-    m = re.match(r"задача для (.+?):\s*(.+)", text, re.IGNORECASE | re.DOTALL)
-    if m:
-        await _handle_route_task(chat_id, message_id, m.group(1).strip(), m.group(2).strip())
         return
 
     await send(chat_id, "🤔 Не понял команду. Напишите /help для справки.")
