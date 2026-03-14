@@ -11,7 +11,7 @@ sequenceDiagram
     participant R as Manager Redis
     participant M as Manager Bot
 
-    U->>O: задача для hives-manager: текст
+    U->>O: hives-manager: текст
     O->>R: pending:{N} + notify queue
     O->>U: 📬 задача #N передана
 
@@ -26,9 +26,9 @@ sequenceDiagram
 
 | Command | Description |
 |---|---|
-| `задача для [manager]: [text]` | Route task to a specific manager |
+| `[manager]: [text]` | Route task to a specific manager |
 | `кто делает [project]?` | Find which manager handles a project |
-| `задачи` | List all pending tasks across all managers |
+| `/tasks` | List all pending tasks across all managers |
 | `статус [manager]` | Last task result for a manager |
 | `/status` | Health check all managers |
 | `/managers` | List managers with queue lengths |

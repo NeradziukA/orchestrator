@@ -51,13 +51,7 @@ async def handle_message(chat_id: int, user_id: int, text: str, message_id: int)
         await handle_who_does(chat_id, m.group(1).strip().rstrip("?!. "))
         return
 
-    # "задача для X: текст" — checked before generic "задач" keyword
-    m = re.match(r"задача для (.+?):\s*(.+)", text, re.IGNORECASE | re.DOTALL)
-    if m:
-        await handle_route_task(chat_id, message_id, m.group(1).strip(), m.group(2).strip())
-        return
-
-    if any(kw in tl for kw in ("задач", "очередь", "незавершён", "не завершён")):
+    if tl == "/tasks":
         await handle_tasks(chat_id)
         return
 
@@ -72,6 +66,12 @@ async def handle_message(chat_id: int, user_id: int, text: str, message_id: int)
 
     if tl == "/update_bot":
         await handle_update_bot(chat_id)
+        return
+
+    # "[менеджер]: [текст]" — catch-all, checked last
+    m = re.match(r"^(.+?):\s*(.+)", text, re.DOTALL)
+    if m:
+        await handle_route_task(chat_id, message_id, m.group(1).strip(), m.group(2).strip())
         return
 
     await send(chat_id, "🤔 Не понял команду. Напишите /help для справки.")
